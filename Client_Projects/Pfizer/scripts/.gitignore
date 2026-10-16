@@ -1,0 +1,13 @@
+# Python virtual environments and caches
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ipynb_checkpoints/
+
+# Maven build output
+**/target/
+
+**/lib/
+**/.devcontainer/
+**/venv/

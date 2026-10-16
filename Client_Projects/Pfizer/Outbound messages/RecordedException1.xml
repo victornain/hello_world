@@ -1,0 +1,41 @@
+<ProcessRecordedException xmlns="http://www.mesa.org/xml/B2MML-V0600" xmlns:b2m="http://www.mesa.org/xml/B2MML-V0600-AllExtensions">
+  <ApplicationArea>
+    <Sender>
+      <LogicalID>MES</LogicalID>
+    </Sender>
+    <Receiver>
+      <LogicalID>QMS</LogicalID>
+    </Receiver>
+  </ApplicationArea>
+  <DataArea>
+    <PSUniqueExceptionID>WF2600000095 - 001</PSUniqueExceptionID>
+    <OrderOrWorkflowIdentifier>WF2600000095</OrderOrWorkflowIdentifier>
+    <ExceptionIdentifier>001</ExceptionIdentifier>
+    <ExceptionDescription>Manual Identification
+Manual entry: DY-Scale</ExceptionDescription>
+    <ExceptionReference>WF2600000095/‎Unit Procedure-01/‎Operation-01/‎Identify Equipment (SSB) [3.0]-01</ExceptionReference>
+    <ExceptionRiskChoiceElement>
+      <b2m:Meaning>High</b2m:Meaning>
+      <b2m:Localized>High</b2m:Localized>
+      <b2m:Value>30</b2m:Value>
+      <b2m:ChoiceListName>RiskClass</b2m:ChoiceListName>
+    </ExceptionRiskChoiceElement>
+    <ExceptionCategoryChoiceElement>
+      <b2m:Meaning>User triggered</b2m:Meaning>
+      <b2m:Localized>User-triggered</b2m:Localized>
+      <b2m:Value>30</b2m:Value>
+      <b2m:ChoiceListName>ExceptionCategory</b2m:ChoiceListName>
+    </ExceptionCategoryChoiceElement>
+    <ExceptionFirstSignature>
+      <TimeStamp>2026-09-21T15:03:51.012+05:30</TimeStamp>
+      <Description>Default signature for exceptions with high risk</Description>
+      <RecordReference>23642822</RecordReference>
+      <Name>ap</Name>
+      <Name>null null</Name>
+      <ChangeIndication>63bf5856b80fbb85735531746ccdbbf5</ChangeIndication>
+      <Reason>DEFAULT</Reason>
+    </ExceptionFirstSignature>
+    <StationIdentifier>sj_WS1</StationIdentifier>
+    <WorkCenterIdentifier>sj_DWC1</WorkCenterIdentifier>
+  </DataArea>
+</ProcessRecordedException>

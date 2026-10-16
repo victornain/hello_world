@@ -1,0 +1,15 @@
+{
+  "name": "pfizer-activemq-openwire-test",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "postCreateCommand": "mvn -f pom.xml dependency:copy-dependencies && python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "vscjava.vscode-java-pack"
+      ]
+    }
+  }
+}

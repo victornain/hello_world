@@ -1,0 +1,43 @@
+<ProcessRecordedException xmlns="http://www.mesa.org/xml/B2MML-V0600" xmlns:b2m="http://www.mesa.org/xml/B2MML-V0600-AllExtensions">
+  <ApplicationArea>
+    <Sender>
+      <LogicalID>MES</LogicalID>
+    </Sender>
+    <Receiver>
+      <LogicalID>QMS</LogicalID>
+    </Receiver>
+  </ApplicationArea>
+  <DataArea>
+    <PSUniqueExceptionID>WF2200001124 - 003</PSUniqueExceptionID>
+    <OrderOrWorkflowIdentifier>WF2200001124</OrderOrWorkflowIdentifier>
+    <ExceptionIdentifier>003</ExceptionIdentifier>
+    <ExceptionDescription>Alarm converted (see exception 002)
+Timestamp: 30Sep2022 16:04:57 CEST / Source: 
+Alarm: High High Alarm - DCS.DC1705.TT120
+Comment: This comment from DCS - Initiate bypass sequence</ExceptionDescription>
+    <ExceptionReference>WF2200001124/‎Get DCS Alarms [UP]/‎DCS Phases [O]/‎GDA - both</ExceptionReference>
+    <ExceptionRiskChoiceElement>
+      <b2m:Meaning>High</b2m:Meaning>
+      <b2m:Localized>High</b2m:Localized>
+      <b2m:Value>30</b2m:Value>
+      <b2m:ChoiceListName>RiskClass</b2m:ChoiceListName>
+    </ExceptionRiskChoiceElement>
+    <ExceptionCategoryChoiceElement>
+      <b2m:Meaning>User triggered</b2m:Meaning>
+      <b2m:Localized>User-triggered</b2m:Localized>
+      <b2m:Value>30</b2m:Value>
+      <b2m:ChoiceListName>ExceptionCategory</b2m:ChoiceListName>
+    </ExceptionCategoryChoiceElement>
+    <ExceptionFirstSignature>
+      <TimeStamp>2022-09-30T10:39:01.528-04:00</TimeStamp>
+      <Description>Default signature for exceptions with high risk</Description>
+      <RecordReference>15692572</RecordReference>
+      <Name>jma</Name>
+      <Name>Justin Mader</Name>
+      <ChangeIndication>9c3c213a038eca83cf73ddd373b5d044</ChangeIndication>
+      <Reason>DEFAULT</Reason>
+    </ExceptionFirstSignature>
+    <StationIdentifier>JMAST_M</StationIdentifier>
+    <WorkCenterIdentifier>JMAWC_M</WorkCenterIdentifier>
+  </DataArea>
+</ProcessRecordedException>

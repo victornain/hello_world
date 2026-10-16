@@ -1,0 +1,96 @@
+# Local end-to-end test stack: ActiveMQ 5.15 + LocalStack SQS + both bridges.
+#   docker compose up --build
+# For real environments run each bridge image on its own with an env file (see config/*.env.example).
+services:
+  activemq:
+    image: rmohr/activemq:5.15.9
+    ports:
+      - "61616:61616"   # OpenWire
+      - "8161:8161"     # Web console (admin/admin)
+
+  localstack:
+    image: localstack/localstack:3.8
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./local/localstack-init:/etc/localstack/init/ready.d:ro
+
+  amq-to-sqs:
+    build:
+      context: .
+      dockerfile: amq-to-sqs/Dockerfile
+    depends_on: [activemq, localstack]
+    restart: unless-stopped
+    environment:
+      SITE_ID: LOCAL
+      ACTIVEMQ_URL: tcp://activemq:61616
+      ACTIVEMQ_USER: admin
+      ACTIVEMQ_PASSWORD: admin
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT_OVERRIDE: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/exception-in
+    volumes:
+      - failed-messages:/data/failed
+
+  sqs-to-amq:
+    build:
+      context: .
+      dockerfile: sqs-to-amq/Dockerfile
+    depends_on: [activemq, localstack]
+    restart: unless-stopped
+    environment:
+      ACTIVEMQ_URL: tcp://activemq:61616
+      ACTIVEMQ_USER: admin
+      ACTIVEMQ_PASSWORD: admin
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT_OVERRIDE: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/exception-out
+
+  # Split mode: same flow as amq-to-sqs, in two services sharing a folder.
+  #   docker compose --profile split up --build activemq localstack amq-to-folder folder-to-sqs
+  amq-to-folder:
+    profiles: [split]
+    build:
+      context: .
+      dockerfile: amq-to-folder/Dockerfile
+    depends_on: [activemq]
+    restart: unless-stopped
+    environment:
+      SITE_ID: LOCAL
+      ACTIVEMQ_URL: tcp://activemq:61616
+      ACTIVEMQ_USER: admin
+      ACTIVEMQ_PASSWORD: admin
+      ACTIVEMQ_POLL_INTERVAL: 1m
+    volumes:
+      - message-folder:/data/messages
+      - failed-messages:/data/failed
+
+  folder-to-sqs:
+    profiles: [split]
+    build:
+      context: .
+      dockerfile: folder-to-sqs/Dockerfile
+    depends_on: [localstack]
+    restart: unless-stopped
+    environment:
+      SITE_ID: LOCAL
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT_OVERRIDE: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/exception-in
+      FOLDER_POLL_INTERVAL: 10s
+    volumes:
+      - message-folder:/data/messages
+      - failed-messages:/data/failed
+
+volumes:
+  failed-messages:
+  message-folder:

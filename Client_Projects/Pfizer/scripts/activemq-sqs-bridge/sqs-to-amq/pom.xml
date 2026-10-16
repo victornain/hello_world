@@ -1,0 +1,31 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.pfizer.bridge</groupId>
+    <artifactId>activemq-sqs-bridge</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>sqs-to-amq</artifactId>
+  <packaging>jar</packaging>
+
+  <properties>
+    <app.mainClass>com.pfizer.bridge.sqstoamq.SqsToAmqApp</app.mainClass>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.pfizer.bridge</groupId>
+      <artifactId>bridge-common</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>sqs-to-amq</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
