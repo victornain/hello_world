@@ -7,3 +7,11 @@
 
 # Maven build output
 **/target/
+Client_Projects/Pfizer/scripts/temp_maven_error.md
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/amq-to-folder_1.0.0.tar
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/amq-to-sqs_1.0.0.tar
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/config/amq-to-folder.env
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/config/amq-to-sqs.env
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/config/sqs-test.env
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/temp/Pfizer_Root_CA_2024_6_2.pem
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/temp/Pfizer_Root_CA_G2.crt
