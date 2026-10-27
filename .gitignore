@@ -7,3 +7,11 @@
 
 # Maven build output
 **/target/
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/config/amq-to-sqs.env
+Client_Projects/Pfizer/temp_Maven_Error.md
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge.zip
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/Ingestion-Multi-Site-Guide.md
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/ingestion.yaml
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/Instructions_for_activemq-sqs-bridge_refactor.md
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/noumiks_reference/__main__.py
+Client_Projects/Pfizer/scripts/activemq-sqs-bridge/noumiks_reference/service.py

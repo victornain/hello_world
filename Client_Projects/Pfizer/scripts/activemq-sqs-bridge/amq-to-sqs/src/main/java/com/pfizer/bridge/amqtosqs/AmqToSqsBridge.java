@@ -3,27 +3,22 @@ package com.pfizer.bridge.amqtosqs;
 import com.pfizer.bridge.common.ActiveMqPoller;
 import com.pfizer.bridge.common.Backoff;
 import com.pfizer.bridge.common.BridgeRunner;
-import com.pfizer.bridge.common.FailedMessageStore;
 import com.pfizer.bridge.common.MessageMetadata;
-import com.pfizer.bridge.common.SqsPublisher;
 import com.pfizer.bridge.common.XmlInspector;
 import org.apache.activemq.ActiveMQConnectionFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
 
 import javax.jms.JMSException;
 import javax.jms.Message;
-import java.io.IOException;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
 
 /**
  * Reads the ActiveMQ queue one message at a time (continuously or every poll interval) and forwards each to SQS.
- * A message is acknowledged only after SQS accepted it (or it was saved to the failed-message store),
- * so the broker keeps it if the bridge crashes mid-flight. Delivery is at-least-once.
+ * A message is acknowledged only after SQS accepts it, so the broker keeps it if forwarding fails.
+ * Delivery is at-least-once.
  */
 final class AmqToSqsBridge implements BridgeRunner.Bridge {
 
@@ -32,19 +27,17 @@ final class AmqToSqsBridge implements BridgeRunner.Bridge {
     private final ActiveMqPoller poller;
     private final String queueName;
     private final String siteId;
-    private final SqsPublisher publisher;
+    private final PythonSqsPublisher publisher;
     private final XmlInspector inspector;
-    private final FailedMessageStore failedStore;
     private final Backoff sqsBackoff;
 
-    AmqToSqsBridge(ActiveMQConnectionFactory factory, String queueName, String siteId, SqsPublisher publisher,
-                   XmlInspector inspector, FailedMessageStore failedStore, long receiveTimeoutMs,
+    AmqToSqsBridge(ActiveMQConnectionFactory factory, String queueName, String siteId, PythonSqsPublisher publisher,
+                   XmlInspector inspector, long receiveTimeoutMs,
                    Duration pollInterval, Backoff connectionBackoff, Backoff sqsBackoff) {
         this.queueName = queueName;
         this.siteId = siteId;
         this.publisher = publisher;
         this.inspector = inspector;
-        this.failedStore = failedStore;
         this.sqsBackoff = sqsBackoff;
         this.poller = new ActiveMqPoller(factory, queueName, receiveTimeoutMs, pollInterval, connectionBackoff, this::process);
     }
@@ -52,6 +45,11 @@ final class AmqToSqsBridge implements BridgeRunner.Bridge {
     @Override
     public void stop() {
         poller.stop();
+        publisher.stop();
+    }
+
+    String siteId() {
+        return siteId;
     }
 
     @Override
@@ -67,13 +65,14 @@ final class AmqToSqsBridge implements BridgeRunner.Bridge {
         String jmsId = MessageMetadata.jmsMessageId(message);
         String body = MessageMetadata.readBody(message);
         if (body == null) {
-            storeAndAck(message, jmsId, message.toString(), "Unsupported JMS message type: " + message.getClass().getName());
+            LOG.error("Unsupported JMS message type for site={} jmsId={}; leaving it unacknowledged",
+                    siteId, jmsId);
             return;
         }
 
         XmlInspector.Result info = inspector.inspect(body);
         if (info.schemaValid().filter(valid -> !valid).isPresent()) {
-            LOG.warn("Message {} failed XSD validation (forwarding anyway, SchemaValid=false): {}", jmsId, info.validationError());
+            LOG.warn("Message failed XSD validation for site={} jmsId={} (forwarding anyway)", siteId, jmsId);
         }
         Map<String, MessageAttributeValue> attributes =
                 MessageMetadata.fromJms(message, siteId, queueName).toSqsAttributes(info);
@@ -83,37 +82,17 @@ final class AmqToSqsBridge implements BridgeRunner.Bridge {
                 String sqsId = publisher.send(body, attributes, jmsId);
                 message.acknowledge();
                 sqsBackoff.reset();
-                LOG.info("Forwarded JMS {} (PSUniqueExceptionID={}) -> SQS {}", jmsId, info.exceptionId().orElse("?"), sqsId);
+                LOG.info("Forwarded message for site={} jmsId={} to SQS id={}", siteId, jmsId, sqsId);
                 return;
-            } catch (SqsPublisher.RejectedException e) {
-                LOG.error("SQS permanently rejected JMS {}: {}", jmsId, e.getMessage());
-                storeAndAck(message, jmsId, body, e.getMessage());
-                return;
-            } catch (SdkException e) {
+            } catch (PythonSqsPublisher.PublishException e) {
                 long delay = sqsBackoff.nextDelayMs();
-                LOG.warn("SQS send failed for JMS {}, retrying in {} ms: {}", jmsId, delay, e.getMessage());
+                LOG.warn("boto3 send_message failed for site={} jmsId={} code={}, retrying in {} ms",
+                        siteId, jmsId, e.errorCode(), delay);
                 if (!Backoff.sleep(delay)) {
                     poller.stop();
                 }
             }
         }
-        LOG.info("Stopping before JMS {} was forwarded; left unacknowledged for redelivery.", jmsId);
-    }
-
-    private void storeAndAck(Message message, String jmsId, String body, String reason) throws JMSException {
-        while (poller.isRunning()) {
-            try {
-                Path saved = failedStore.save(jmsId, body, reason);
-                message.acknowledge();
-                LOG.error("JMS {} saved to {} and acknowledged.", jmsId, saved);
-                return;
-            } catch (IOException e) {
-                long delay = sqsBackoff.nextDelayMs();
-                LOG.error("Cannot write failed message {} to disk, retrying in {} ms: {}", jmsId, delay, e.getMessage());
-                if (!Backoff.sleep(delay)) {
-                    poller.stop();
-                }
-            }
-        }
+        LOG.info("Stopping before forwarding for site={} jmsId={}; left unacknowledged", siteId, jmsId);
     }
 }

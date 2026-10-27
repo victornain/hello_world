@@ -8,8 +8,6 @@
   <modules>
     <module>bridge-common</module>
     <module>amq-to-sqs</module>
-    <module>amq-to-folder</module>
-    <module>folder-to-sqs</module>
     <module>sqs-to-amq</module>
   </modules>
 

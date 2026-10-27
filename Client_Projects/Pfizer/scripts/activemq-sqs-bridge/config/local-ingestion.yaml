@@ -1,0 +1,13 @@
+aws:
+  region: us-east-1
+
+environments:
+  DEV:
+    sites:
+      - site: LOCAL
+        activemq:
+          url: tcp://activemq:61616
+          queue: PROCESS_EXCEPTION_RECORD_EXTERNALLY_REQUEST
+          credentials_secret: null
+        sqs:
+          queue_url: http://localstack:4566/000000000000/exception-in

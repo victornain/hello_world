@@ -2,7 +2,7 @@
 
 *Spanish version: [README.es.md](README.es.md)*
 
-Two independent, configurable containers that move PharmaSuite exception messages between ActiveMQ (native OpenWire) and AWS SQS:
+Two independent containers that move PharmaSuite exception messages between ActiveMQ (native OpenWire) and AWS SQS:
 
 | Container | Direction | Default source | Default target |
 |---|---|---|---|
@@ -21,28 +21,7 @@ flowchart LR
     AMQOUT --> PRC[PRC]
 ```
 
-Each PharmaSuite site has its own broker, so you deploy **one pair of containers per site**. The sites differ only in their environment variables: broker URL, credentials, `SITE_ID` and SQS queue URLs.
-
-### Split mode: `amq-to-folder` + `folder-to-sqs`
-
-When Docker and the PharmaSuite environment are not available for an integrated demo, the ingestion direction can run as **two separate services** that hand off through a local folder:
-
-| Service | Runs on | Does |
-|---|---|---|
-| `amq-to-folder` (**Local service**) | Next to the broker | Polls ActiveMQ every `ACTIVEMQ_POLL_INTERVAL` (default `5m`) and saves each XML message as a file in `MESSAGE_FOLDER` |
-| `folder-to-sqs` (**Pfizer service**) | Wherever AWS is reachable | Scans `MESSAGE_FOLDER` every `FOLDER_POLL_INTERVAL` and pushes each file to SQS, then moves it to `processed/` |
-
-```mermaid
-flowchart LR
-    AMQIN[(ActiveMQ inbound queue)] -->|poll every ACTIVEMQ_POLL_INTERVAL| A2F[amq-to-folder]
-    A2F --> DIR[/MESSAGE_FOLDER<br/>*.xml + *.properties/]
-    DIR -->|scan every FOLDER_POLL_INTERVAL| F2S[folder-to-sqs]
-    F2S --> SQSIN[(SQS exception-in)]
-```
-
-Both are plain `java -jar` applications and need no Docker. The SQS messages are the same as the ones `amq-to-sqs` sends: same attributes, same FIFO group and deduplication ID.
-
-> **Status:** `mvn package` builds all JARs. A startup smoke test confirmed that each app reads its configuration and stops with a clear error if a required variable is missing. The split services were tested locally end-to-end against an embedded ActiveMQ 5.15 broker and a mock SQS endpoint. That test covered polling with the configured interval, the folder hand-off, SQS retry while the endpoint was down, and permanent rejection. **Nothing has been tested against a real PharmaSuite broker or real AWS SQS**, and the Docker images and `docker compose` stack have not been built or run.
+`amq-to-sqs` runs once for all configured sites. It reads each site's ActiveMQ broker, inbound queue, and SQS destination from `ingestion.yaml`; messages are routed to the SQS queue in the same site entry and include a `site` message attribute. Use `--env DEV`, `--env QA`, or `--env PROD` to select the environment. The `sqs-to-amq` module remains a separate outbound bridge.
 
 ---
 
@@ -52,19 +31,13 @@ Both are plain `java -jar` applications and need no Docker. The SQS messages are
 activemq-sqs-bridge/
 ├── pom.xml                      # Maven parent (Java 17, activemq-client 5.15.0, AWS SDK v2)
 ├── bridge-common/               # Shared library
-├── amq-to-sqs/                  # Container 1: ActiveMQ -> SQS
+├── amq-to-sqs/                  # Multi-site ActiveMQ -> SQS ingestion
 │   └── Dockerfile
 ├── sqs-to-amq/                  # Container 2: SQS -> ActiveMQ
 │   └── Dockerfile
-├── amq-to-folder/               # Split mode, Local service: ActiveMQ -> folder
-│   └── Dockerfile
-├── folder-to-sqs/               # Split mode, Pfizer service: folder -> SQS
-│   └── Dockerfile
+├── ingestion.yaml               # Site mapping by environment
 ├── config/
-│   ├── amq-to-sqs.env.example   # Per-site configuration template
-│   ├── sqs-to-amq.env.example
-│   ├── amq-to-folder.env.example
-│   └── folder-to-sqs.env.example
+│   └── sqs-to-amq.env.example
 ├── local/localstack-init/
 │   └── create-queues.sh         # Creates local SQS queues + DLQs in LocalStack
 └── docker-compose.yml           # Local test stack
@@ -83,33 +56,34 @@ All services use this module, so connection handling, configuration and retry be
 | Class | Responsibility |
 |---|---|
 | `EnvConfig` | Reads settings with type checks: `required`, `optional`, `intValue`, `longValue`, `boolValue`, `durationValue`. Settings come from environment variables and, optionally, a `KEY=VALUE` file passed with `--config <file>` or `BRIDGE_CONFIG_FILE`. Real environment variables override the file. Durations accept `500ms`, `30s`, `5m`, `10m`, `1h`, `1h30m`, `1d` or ISO-8601 (`PT10M`). A bare number other than `0` is rejected because its unit would be ambiguous. A missing or invalid value raises a `ConfigException`, and the app exits with code 2 before it connects to anything. `secret(KEY)` also supports `KEY_FILE`, so passwords can be mounted as Docker/Kubernetes secrets instead of plain env vars. |
-| `ActiveMqPoller` | The shared ActiveMQ consume loop (`INDIVIDUAL_ACKNOWLEDGE` session, reconnect with backoff). Its behaviour depends on `ACTIVEMQ_POLL_INTERVAL`. With `0` it stays connected and consumes continuously. With an interval greater than 0 it connects, drains every message currently in the queue, disconnects and sleeps for the interval, so no prefetched message is held while it sleeps. Used by `amq-to-sqs` and `amq-to-folder`. |
-| `MessageMetadata` | The JMS metadata that travels with a message (site, queue, JMS ID, timestamp, content type). It builds the SQS message attributes and reads/writes the `.properties` sidecar files. |
-| `MessageFolder` | The folder hand-off format. `write` creates `<timestamp>_<jmsId>.properties` and then `<timestamp>_<jmsId>.xml`. The XML is written to a `.tmp` file and atomically renamed, so readers only ever see complete files. The name comes from the JMS timestamp and ID, so a redelivered message overwrites nothing and creates no duplicate. `pending()` lists the `*.xml` files oldest first. |
-| `SqsPublisher`, `XmlInspector`, `FailedMessageStore` | Described under `amq-to-sqs` below. They live here so that `folder-to-sqs` uses exactly the same SQS logic. |
+| `ActiveMqPoller` | The shared ActiveMQ consume loop (`INDIVIDUAL_ACKNOWLEDGE` session, reconnect with backoff). With `ACTIVEMQ_POLL_INTERVAL=0` it consumes continuously; a positive duration drains the queue, disconnects, and sleeps. Each configured site gets its own poller. |
+| `MessageMetadata` | The JMS metadata that travels with a message (site, queue, JMS ID, timestamp, content type) and becomes SQS message attributes. |
+| `XmlInspector` | Inspects XML payloads and optionally performs XSD validation. |
 | `ActiveMqSettings` | Builds the `ActiveMQConnectionFactory` from `ACTIVEMQ_*` variables. It automatically wraps the URL in `failover:(...)` so the client reconnects with exponential backoff, and the failover `timeout` makes a blocked send fail instead of hanging forever. For `ssl://` URLs it uses `ActiveMQSslConnectionFactory` with an optional truststore and keystore (for mutual TLS). It sets prefetch = 1, so at most one unacknowledged message is held in memory, and an unlimited redelivery policy, so the client never poison-acks a message to the broker's DLQ. It turns off advisory topics, which often need extra broker permissions. `describe()` returns a log-safe summary with no passwords. |
 | `SqsSettings` | Builds the AWS SDK v2 `SqsClient` from `AWS_REGION`, `SQS_QUEUE_URL` and an optional `SQS_ENDPOINT_OVERRIDE` (for LocalStack or a VPC interface endpoint). Credentials come from the **AWS default credentials chain** (env vars, `AWS_PROFILE`, web identity, container/instance role), so the code never handles secrets. It treats the queue as FIFO when the URL ends in `.fifo`. `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` or `AWS_PROFILE` set in a `--config` file are also honoured, because the SDK itself only sees real environment variables. |
 | `Backoff` | Exponential backoff with jitter (`RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`), used for every reconnect and retry loop. |
 | `BridgeRunner` | Runs the bridge loop on the main thread and registers a shutdown hook. On SIGTERM/SIGINT (`docker stop`) it signals the loop to stop and waits up to `SHUTDOWN_GRACE_MS` for in-flight work to finish. |
 | `simplelogger.properties` | Logs to stdout with timestamps and thread names. AWS SDK and HTTP client noise is lowered to `warn`. |
 
-### `amq-to-sqs` — ingestion container
+### `amq-to-sqs` — multi-site ingestion container
 
-It consumes the ActiveMQ inbound queue one message at a time and forwards each message to SQS. By default it consumes continuously. Set `ACTIVEMQ_POLL_INTERVAL` (e.g. `5m`) to poll instead.
+It starts one independent consumer for every site in the selected environment. Each consumer sends to that site's configured SQS queue, adds the `site` attribute, and acknowledges the ActiveMQ message only after SQS accepts it. A broker outage on one site does not stop the other site consumers.
 
 | Class | Responsibility |
 |---|---|
-| `AmqToSqsApp` | Entry point. Reads and validates the configuration, logs a safe summary, wires the components together and starts `BridgeRunner`. |
-| `AmqToSqsBridge` | Message handler for `ActiveMqPoller`. It receives a message, inspects it, sends it to SQS and only then **acknowledges it to ActiveMQ**. If SQS fails with a transient error, it retries with backoff for as long as needed. While it retries, nothing new is consumed, which acts as natural back-pressure. If the ActiveMQ connection breaks, it rebuilds it with backoff. On shutdown, any message not yet forwarded stays unacknowledged, so the broker redelivers it. Reads `TextMessage` and `BytesMessage` (as UTF-8). Other message types go to the failed-message store. |
-| `SqsPublisher` | Sends one message to SQS. It **rejects permanently** an empty body, a body larger than `SQS_MAX_MESSAGE_BYTES`, or a message SQS refuses with a non-retryable error code (`InvalidMessageContents`, `InvalidParameterValue`, …). Every other `SdkException` counts as transient. For FIFO queues it sets `MessageGroupId = SITE_ID` and `MessageDeduplicationId = sha256(SITE_ID + JMSMessageID)`, so SQS drops a JMS redelivery that arrives within its 5-minute deduplication window. |
+| `AmqToSqsApp` | Entry point. Reads `INGESTION_CONFIG` and the required `--env` argument, validates all site entries, resolves optional broker secrets, and starts the site workers. |
+| `MultiSiteBridge` | Runs each site's consumer on an independent worker thread. |
+| `AmqToSqsBridge` | Reads `TextMessage` and `BytesMessage` (as UTF-8), passes each message to the Python publisher, then acknowledges it after a successful response. Failed sends retry with backoff and remain unacknowledged; a permanent rejection can hold up that site's queue. Logs identify only site and message ID, never message content. |
+| `PythonSqsPublisher` | Maintains a local worker process and sends it the per-site queue URL, region, body, and attributes over JSON lines. |
+| `sqs_publisher.py` | Uses `boto3.client("sqs", region_name=...)` and `send_message(QueueUrl=...)`. The queue URL comes from the same site's `sqs.queue_url` YAML entry. |
 | `XmlInspector` | Parses the payload with an XXE-hardened DOM parser: DOCTYPE disallowed, secure processing on, external access blocked. It extracts `PSUniqueExceptionID`. If `XSD_PATH` points to `RAExternalExceptionHandling.xsd`, it also validates the payload. Inspection **never blocks forwarding**: an invalid or non-XML payload is still sent, with `SchemaValid=false`, and the downstream consumer decides what to do with it. |
-| `FailedMessageStore` | Last-resort store for messages SQS rejects permanently. It writes `<timestamp>_<jmsId>.msg` (the body) and a `.reason.txt` file to `FAILED_MESSAGE_DIR` (default `/data/failed`; mount it as a volume), and only then acknowledges the message. The broker does not persist messages (they only have a TTL), so dropping them would lose data. The message ID is sanitized before it is used as a file name, to prevent path traversal. |
 
 **SQS message attributes added:**
 
 | Attribute | Value |
 |---|---|
-| `SourceSite` | `SITE_ID` (used for S2 tagging) |
+| `site` | Exact site name from the selected YAML entry |
+| `SourceSite` | Site name (used for S2 tagging) |
 | `SourceQueue` | ActiveMQ queue name |
 | `JmsMessageId` | Original JMS message ID |
 | `JmsTimestamp` | JMS timestamp (Number) |
@@ -127,26 +101,6 @@ It long-polls an SQS queue and publishes each message to the ActiveMQ outbound q
 | `SqsToAmqBridge` | Main loop. Receives a batch, publishes each message to ActiveMQ and **deletes it from SQS only after the broker accepted it**. If the publish fails, it resets the ActiveMQ connection, backs off and stops processing the current batch. The remaining messages become visible again after the visibility timeout, and after the queue's `maxReceiveCount` they move to the SQS DLQ (redrive policy configured on the AWS side). If the delete fails after a successful publish, it logs a warning, because the message will be delivered again as a duplicate. String/Number SQS attributes become JMS string properties, with names sanitized to valid Java identifiers that never start with the reserved `JMS` prefix. `SqsMessageId` is added, and `ContentType` defaults to `text/xml`. |
 | `ActiveMqPublisher` | Producer that connects lazily and reconnects when needed. Persistent sends (the default) are synchronous: `send()` returns only after the broker accepted the message. Supports an optional message TTL. |
 
-### `amq-to-folder` — Local service (split mode)
-
-It polls the ActiveMQ inbound queue and saves each message as an XML file.
-
-| Class | Responsibility |
-|---|---|
-| `AmqToFolderApp` | Entry point. Reads the configuration (`ACTIVEMQ_POLL_INTERVAL` defaults to `5m`), logs a safe summary and starts `BridgeRunner`. |
-| `AmqToFolderBridge` | Message handler for `ActiveMqPoller`. It writes the message with `MessageFolder` and **acknowledges it to ActiveMQ only after the file is safely on disk**. If the write fails (disk full, share offline), it retries with backoff and nothing new is consumed. Message types other than Text/Bytes go to the failed-message store and are acknowledged. Each poll logs `Poll of <queue> finished: N message(s); next poll in <interval>`. |
-
-### `folder-to-sqs` — Pfizer service (split mode)
-
-It scans the folder and pushes each XML file to SQS, oldest first.
-
-| Class | Responsibility |
-|---|---|
-| `FolderToSqsApp` | Entry point. Reads the configuration, logs a safe summary and starts `BridgeRunner`. |
-| `FolderToSqsBridge` | Scan loop. For each `*.xml` file it reads the body and the `.properties` sidecar, inspects the XML and sends it with `SqsPublisher`. After a successful send it moves the file and its sidecar to `PROCESSED_DIR`, or deletes them if `DELETE_AFTER_SEND=true`. If SQS fails with a transient error, it retries the same file with backoff, so order is kept. A file SQS rejects permanently is saved in `FAILED_MESSAGE_DIR` with a `.reason.txt` and removed from the folder. A file without a sidecar (for example, dropped in by hand) is still sent, using `SITE_ID` and `ACTIVEMQ_QUEUE` as `SourceSite`/`SourceQueue`. |
-
-If `folder-to-sqs` stops between the SQS send and the file move, the file is sent again on the next scan. On a FIFO queue the deduplication ID is the same, so SQS drops the copy within its 5-minute window.
-
 ### Delivery guarantees
 
 Both directions are **at-least-once**: a message should not be lost, but it can arrive twice. The Phase 3.2 idempotency check is therefore still required downstream. FIFO queues reduce duplicates on the SQS side, but only within the 5-minute deduplication window.
@@ -160,17 +114,14 @@ Both directions are **at-least-once**: a message should not be lost, but it can 
 
 ## Configuration reference
 
-Every setting comes from environment variables or from a config file. The templates are [config/amq-to-sqs.env.example](config/amq-to-sqs.env.example), [config/sqs-to-amq.env.example](config/sqs-to-amq.env.example), [config/amq-to-folder.env.example](config/amq-to-folder.env.example) and [config/folder-to-sqs.env.example](config/folder-to-sqs.env.example).
-**Note:** `docker --env-file` does not support inline comments. Put each comment on its own line.
+`amq-to-sqs` reads site connections from `ingestion.yaml` (or the file named by `INGESTION_CONFIG`) and requires `--env DEV|QA|PROD`. Broker passwords are stored in AWS Secrets Manager; set `credentials_secret` to the secret name. The secret string must be a JSON object with `username` and `password`. Runtime tuning and AWS credentials are supplied through environment variables. `sqs-to-amq` continues to use its env-style configuration file.
 
-**Config file:** without Docker, pass the same `KEY=VALUE` file with `--config <file>`, or set `BRIDGE_CONFIG_FILE=<file>`. Real environment variables override values from the file. Settings such as the poll interval therefore live outside the code. To change ActiveMQ polling from 5 to 10 minutes, set `ACTIVEMQ_POLL_INTERVAL=10m` in the file and restart the service.
-
-### Common (both containers)
+### `sqs-to-amq` environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `ACTIVEMQ_URL` | yes | — | e.g. `tcp://aznaampstalos1i:61646` or `ssl://host:61647` |
-| `ACTIVEMQ_QUEUE` | no | inbound/outbound queue | Queue to consume from / publish to |
+| `ACTIVEMQ_QUEUE` | no | outbound queue | Queue to publish to |
 | `ACTIVEMQ_USER` | no | anonymous | Broker user |
 | `ACTIVEMQ_PASSWORD` / `ACTIVEMQ_PASSWORD_FILE` | no | — | Broker password |
 | `ACTIVEMQ_USE_FAILOVER` | no | `true` | Wrap the URL in `failover:(...)` |
@@ -179,51 +130,28 @@ Every setting comes from environment variables or from a config file. The templa
 | `ACTIVEMQ_SSL_KEYSTORE` / `_PASSWORD` | mutual TLS only | — | Client keystore |
 | `ACTIVEMQ_MAX_REDELIVERIES` | no | `-1` | Client redelivery policy (`-1` = unlimited) |
 | `AWS_REGION` | yes | — | AWS region |
-| `SQS_QUEUE_URL` | yes | — | Target queue (`amq-to-sqs`) or source queue (`sqs-to-amq`) |
+| `SQS_QUEUE_URL` | yes | — | Source queue |
 | `SQS_ENDPOINT_OVERRIDE` | no | — | LocalStack or VPC interface endpoint |
 | AWS credentials | yes | — | Default chain: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, role, … |
 | `RETRY_INITIAL_DELAY_MS` / `RETRY_MAX_DELAY_MS` | no | `1000` / `60000` | Backoff bounds |
 | `SHUTDOWN_GRACE_MS` | no | `15000` / `30000` | How long shutdown waits for in-flight work |
 | `JAVA_OPTS` | no | `-XX:MaxRAMPercentage=75` | JVM options. The JVM ignores `HTTPS_PROXY`; to use a proxy, pass `-Dhttps.proxyHost=... -Dhttps.proxyPort=...` here. |
 
-### `amq-to-sqs` only
+### `amq-to-sqs` environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SITE_ID` | yes | — | Site code attached to every message |
+| `INGESTION_CONFIG` | no | `./ingestion.yaml` | YAML configuration path |
+| `--env` | yes | — | Environment key from the YAML file (`DEV`, `QA`, or `PROD`) |
+| `AWS_REGION` in YAML | yes | — | Region used by SQS and Secrets Manager |
+| `activemq.url`, `activemq.queue` | yes per site | — | Broker endpoint and inbound queue |
+| `sqs.queue_url` | yes per site | — | Destination queue for messages from that broker |
+| `activemq.credentials_secret` | no | `null` | AWS Secrets Manager secret name with JSON `username` and `password` |
+| `SQS_ENDPOINT_OVERRIDE` | no | — | LocalStack or VPC endpoint override |
 | `XSD_PATH` | no | — | Path to `RAExternalExceptionHandling.xsd` |
-| `SQS_MAX_MESSAGE_BYTES` | no | `262144` | Larger bodies go to the failed-message store |
-| `FAILED_MESSAGE_DIR` | no | `/data/failed` | Failed-message store (mount as a volume) |
+| `SQS_MAX_MESSAGE_BYTES` | no | `262144` | Maximum SQS message body size; rejected messages remain unacknowledged |
 | `ACTIVEMQ_RECEIVE_TIMEOUT_MS` | no | `1000` | Receive poll interval (also bounds shutdown latency) |
 | `ACTIVEMQ_POLL_INTERVAL` | no | `0` | `0` = consume continuously. A duration (e.g. `5m`, `10m`) = drain the queue, disconnect, sleep for that long |
-
-### `amq-to-folder` only
-
-Also uses the common `ACTIVEMQ_*`, `RETRY_*` and `SHUTDOWN_GRACE_MS` settings.
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `SITE_ID` | yes | — | Site code written to each message's metadata |
-| `ACTIVEMQ_POLL_INTERVAL` | no | `5m` | How often ActiveMQ is polled (`ms`, `s`, `m`, `h`, `d`, combinations like `1h30m`, or ISO `PT10M`). `0` = consume continuously |
-| `ACTIVEMQ_RECEIVE_TIMEOUT_MS` | no | `1000` | How long a receive waits for the next message before the poll is considered finished |
-| `MESSAGE_FOLDER` | no | `/data/messages` | Where the XML files and `.properties` sidecars are written |
-| `FAILED_MESSAGE_DIR` | no | `/data/failed` | Messages that are not Text/Bytes JMS messages |
-
-### `folder-to-sqs` only
-
-Also uses the common `AWS_*`, `SQS_*`, `RETRY_*` and `SHUTDOWN_GRACE_MS` settings. It does not use ActiveMQ.
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `SITE_ID` | yes | — | FIFO `MessageGroupId`, and `SourceSite` for files without a sidecar |
-| `MESSAGE_FOLDER` | no | `/data/messages` | Folder written by `amq-to-folder` |
-| `FOLDER_POLL_INTERVAL` | no | `30s` | How often the folder is scanned (same format as `ACTIVEMQ_POLL_INTERVAL`) |
-| `PROCESSED_DIR` | no | `<MESSAGE_FOLDER>/processed` | Where sent files are moved |
-| `DELETE_AFTER_SEND` | no | `false` | Delete sent files instead of moving them |
-| `FAILED_MESSAGE_DIR` | no | `/data/failed` | Files SQS rejects permanently |
-| `ACTIVEMQ_QUEUE` | no | `PROCESS_EXCEPTION_RECORD_EXTERNALLY_REQUEST` | `SourceQueue` for files without a sidecar |
-| `XSD_PATH` | no | — | Path to `RAExternalExceptionHandling.xsd` |
-| `SQS_MAX_MESSAGE_BYTES` | no | `262144` | Larger files go to the failed-message store |
 
 ### `sqs-to-amq` only
 
@@ -237,7 +165,8 @@ Also uses the common `AWS_*`, `SQS_*`, `RETRY_*` and `SHUTDOWN_GRACE_MS` setting
 
 ### Minimum IAM permissions
 
-- `amq-to-sqs` and `folder-to-sqs`: `sqs:SendMessage` on `exception-in`.
+- `amq-to-sqs`: `sqs:SendMessage` on each configured inbound queue.
+- If `credentials_secret` is set: `secretsmanager:GetSecretValue` on the referenced broker secret.
 - `sqs-to-amq`: `sqs:ReceiveMessage` and `sqs:DeleteMessage` on the outbound queue.
 - If the queues use SSE-KMS: `kms:GenerateDataKey` (sender) and `kms:Decrypt` (receiver) on that key.
 
@@ -253,32 +182,14 @@ mvn -B package
 docker build -f amq-to-sqs/Dockerfile -t amq-to-sqs:1.0.0 .
 docker build -f sqs-to-amq/Dockerfile -t sqs-to-amq:1.0.0 .
 
-# Run against a real broker (one env file per site)
-cp config/amq-to-sqs.env.example andover.env   # fill in the values
-docker run -d --name amq-to-sqs-andover --env-file andover.env -v amq-failed-andover:/data/failed amq-to-sqs:1.0.0
+# Run one process for all sites in the selected environment
+docker run -d --name amq-to-sqs \
+  -e INGESTION_CONFIG=/etc/bridge/ingestion.yaml \
+  -v "$PWD/ingestion.yaml:/etc/bridge/ingestion.yaml:ro" \
+  amq-to-sqs:1.0.0 --env DEV
 ```
 
-The containers run as a non-root user (UID 10001).
-
-### Split mode without Docker
-
-Only Java 17 is needed at run time. Copy each template, fill in the values, and start each service with its own file:
-
-```bash
-mvn -B package
-cp config/amq-to-folder.env.example config/local.env    # ActiveMQ settings, ACTIVEMQ_POLL_INTERVAL, MESSAGE_FOLDER
-cp config/folder-to-sqs.env.example config/pfizer.env   # AWS settings, same MESSAGE_FOLDER
-
-# Local service: polls ActiveMQ and writes ./data/messages/*.xml
-java -jar amq-to-folder/target/amq-to-folder.jar --config config/local.env
-
-# Pfizer service: pushes ./data/messages/*.xml to SQS and moves them to ./data/messages/processed
-java -jar folder-to-sqs/target/folder-to-sqs.jar --config config/pfizer.env
-```
-
-The two services only share the folder, so they can run at different times or on different machines (copy or sync the folder between them). To change the polling frequency, edit `ACTIVEMQ_POLL_INTERVAL` in `config/local.env` (e.g. `5m` → `10m`) and restart the Local service. You can also override it for a single run without editing the file: `ACTIVEMQ_POLL_INTERVAL=10m java -jar ...`, or `$env:ACTIVEMQ_POLL_INTERVAL="10m"` in PowerShell.
-
-With Docker, the same pair is available in the compose stack: `docker compose --profile split up --build activemq localstack amq-to-folder folder-to-sqs`.
+The container includes Java 17, Python 3, and boto3, and runs as a non-root user (UID 10001). For local execution outside Docker, install `amq-to-sqs/requirements.txt` and set `PYTHON_PUBLISHER_SCRIPT` if the default source-tree path does not apply.
 
 ---
 
@@ -288,16 +199,14 @@ With Docker, the same pair is available in the compose stack: `docker compose --
 
 ### 1. Start the local stack
 
-The current dev container has no Docker, so run this on a machine that does:
-
 ```bash
 cd activemq-sqs-bridge
 docker compose up --build -d
 docker compose logs -f amq-to-sqs
-# expected: "Connected, consuming from PROCESS_EXCEPTION_RECORD_EXTERNALLY_REQUEST"
+# expected: a configured site starts consuming
 ```
 
-The stack starts ActiveMQ 5.15.9 (OpenWire on `61616`, web console on `8161`, admin/admin), LocalStack SQS on `4566` with the queues `exception-in`, `exception-out` and their DLQs, and both bridges.
+The stack starts ActiveMQ 5.15.9 (OpenWire on `61616`, web console on `8161`, admin/admin), LocalStack SQS on `4566` with the queues `exception-in`, `exception-out` and their DLQs, and both bridges. `amq-to-sqs` uses `config/local-ingestion.yaml` with the local `DEV` site.
 
 ### 2. Publish a message to ActiveMQ
 
@@ -313,7 +222,7 @@ Pick one of these options:
 
 ### 3. Check that it worked
 
-- In the logs: `Forwarded JMS ID:... (PSUniqueExceptionID=...) -> SQS <id>`.
+- In the logs: `Forwarded message for site=LOCAL jmsId=... to SQS id=...`.
 - In the ActiveMQ console: the queue shows *Pending* = 0 and *Dequeued* goes up by 1.
 - In SQS:
   ```bash
@@ -334,7 +243,7 @@ Then, in the ActiveMQ console, open **Browse** on `EXCEPTION_RECORD_EXTERNAL_RES
 
 - `docker compose stop localstack`, publish a message, then `docker compose start localstack`. The message should reach SQS once LocalStack is back.
 - `docker compose restart activemq`. Both bridges should reconnect on their own.
-- Publish a body larger than `SQS_MAX_MESSAGE_BYTES`. It should show up in the `failed-messages` volume.
+- Restart ActiveMQ while multiple site entries are configured. Other site workers should continue running while the affected broker reconnects.
 
 ---
 
@@ -353,7 +262,7 @@ None of these items are defined in `PlanActiveMQ_a_SQL.md`.
 
 **Pfizer / ActiveMQ**
 
-8. The `SITE_ID` code for each site (Andover, Grange Castle DP, Sanford).
+8. The exact site names to use in YAML (Andover, Grange Castle DP, Sanford).
 9. Production broker URL for each site (`ssl`/61647) and its TLS certificates (truststore, and a keystore if mutual TLS is required).
 10. OpenWire port of the Rockwell instance. The `:8162` we have is only the web console.
 11. The `RAExternalExceptionHandling.xsd` file. It is optional; set it with `XSD_PATH`.
